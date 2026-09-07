@@ -1,0 +1,92 @@
+---
+- name: Deploy SJSU web server on port 8080
+  hosts: webservers
+  become: true
+  vars:
+    web_root: /var/www/sjsu
+    web_port: 8080
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart nginx
+    - name: Create web root directory
+      ansible.builtin.file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+    - name: Render index.html from template
+      ansible.builtin.template:
+        src: templates/index.html.j2
+        dest: "{{ web_root }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+    - name: Render nginx vhost listening on {{ web_port }}
+      ansible.builtin.template:
+        src: templates/sjsu.conf.j2
+        dest: /etc/nginx/sites-available/sjsu.conf
+        mode: '0644'
+      notify: Restart nginx
+    - name: Enable the SJSU site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/sjsu.conf
+        dest: /etc/nginx/sites-enabled/sjsu.conf
+        state: link
+      notify: Restart nginx
+    - name: Allow port {{ web_port }} through the firewall
+      community.general.ufw:
+        rule: allow
+        port: "{{ web_port }}"
+        proto: tcp
+      failed_when: false
+    - name: Ensure nginx is started and enabled at boot
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+    - name: Apply any pending configuration changes now
+      ansible.builtin.meta: flush_handlers
+    - name: Check which TCP ports nginx is actually listening on
+      ansible.builtin.command: ss -ltn
+      register: listening_ports
+      changed_when: false
+    - name: Restart nginx if it is not yet serving on {{ web_port }}
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+      when: (':' + web_port | string) not in listening_ports.stdout
+    - name: Wait for nginx to listen on port {{ web_port }}
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ web_port }}"
+        state: started
+        timeout: 30
+      delegate_to: localhost
+      become: false
+    - name: Verify the page responds over HTTP
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ web_port }}"
+        return_content: true
+      register: page_check
+      delegate_to: localhost
+      become: false
+    - name: Show what the server returned
+      ansible.builtin.debug:
+        msg: "{{ ansible_host }}:{{ web_port }} returned HTTP {{ page_check.status }}"
+  handlers:
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted

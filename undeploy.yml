@@ -1,0 +1,47 @@
+---
+- name: Un-deploy SJSU web server
+  hosts: webservers
+  become: true
+  vars:
+    web_root: /var/www/sjsu
+    web_port: 8080
+  tasks:
+    - name: Stop and disable nginx
+      ansible.builtin.service:
+        name: nginx
+        state: stopped
+        enabled: false
+      failed_when: false
+    - name: Remove enabled site symlink
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/sjsu.conf
+        state: absent
+    - name: Remove vhost definition
+      ansible.builtin.file:
+        path: /etc/nginx/sites-available/sjsu.conf
+        state: absent
+    - name: Remove web root and content
+      ansible.builtin.file:
+        path: "{{ web_root }}"
+        state: absent
+    - name: Delete the firewall rule for port {{ web_port }}
+      community.general.ufw:
+        rule: allow
+        port: "{{ web_port }}"
+        proto: tcp
+        delete: true
+      failed_when: false
+    - name: Uninstall and purge nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: absent
+        purge: true
+        autoremove: true
+    - name: Confirm port {{ web_port }} is no longer listening
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ web_port }}"
+        state: stopped
+        timeout: 15
+      delegate_to: localhost
+      become: false
